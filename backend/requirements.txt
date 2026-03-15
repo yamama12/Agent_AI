@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+mysql-connector-python
+sqlalchemy
+pydantic
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt==4.0.1
+
+
+
+# Google Gemini API client
+google-generativeai
