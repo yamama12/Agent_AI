@@ -10,6 +10,11 @@ class User {
   final List<String> roles;
   final String? token;
   final bool changepassword;
+  final String? nom;
+  final String? prenom;
+  final String? telephone;
+  final String? cin;
+  final String? emailPersonne;
 
   User({
     required this.id,
@@ -19,6 +24,11 @@ class User {
     required this.roles,
     this.token,
     required this.changepassword,
+    this.nom,
+    this.prenom,
+    this.telephone,
+    this.cin,
+    this.emailPersonne,
   });
 
   // Vérifier si l'utilisateur est super admin
@@ -64,8 +74,23 @@ class User {
       idpersonne: json['idpersonne'] ?? 0,
       roles: rolesList,
       token: json['token'],
-      changepassword: json['changepassword'] ?? false,
+      changepassword: _parseBool(json['changepassword']),
+      nom: json['nom'],
+      prenom: json['prenom'],
+      telephone: json['telephone'],
+      cin: json['cin'],
+      emailPersonne: json['email_personne'],
     );
+  }
+
+  static bool _parseBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is String) {
+      final v = value.trim().toLowerCase();
+      return v == 'true' || v == '1' || v == 'yes';
+    }
+    if (value is num) return value != 0;
+    return false;
   }
 
   Map<String, dynamic> toJson() {
@@ -75,6 +100,11 @@ class User {
       'idpersonne': idpersonne,
       'roles': roles,
       'changepassword': changepassword,
+      'nom': nom,
+      'prenom': prenom,
+      'telephone': telephone,
+      'cin': cin,
+      'email_personne': emailPersonne,
       if (token != null) 'token': token,
     };
   }

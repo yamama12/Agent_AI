@@ -11,6 +11,16 @@ router = APIRouter(prefix="/auth", tags=["Authentification"])
 
 print(hash_password("test123"))
 
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -55,5 +65,5 @@ def login(
     return {
         "access_token": token,
         "role": user.roles,
-        "change_password": user.changepassword == "true"
+        "change_password": _as_bool(user.changepassword)
     }
