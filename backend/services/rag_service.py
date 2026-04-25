@@ -10,17 +10,24 @@ from Levenshtein import distance as levenshtein_distance
 from database.eleve_repository import (
     get_eleve_data,
     get_eleve_data_by_name,
+    get_person_status_by_id,
+    get_person_status_by_name,
     search_eleve_candidates,
     search_by_phonetic,
 )
 
 # WORDS TO IGNORE
 STOP_WORDS = {
-    "donner","donne", "moi", "je", "l", "la", "le", "de", "d", "pour", "veux", "veut",
+    "donner","donne", "moi", "je", "l", "la", "le", "les", "de", "des", "d", "pour", "veux", "veut", "Génèrer", "générer", "generer", "generate", "génère",
     "attestation", "atestation","certificat", "inscription", "presence", "présence",
     "scolarite", "scolarité",
     "un", "une", "mon", "ma", "mes", "élève", "eleve", "du",
-    "certificate", "certification", "for", "please", "i", "want", "a"
+    "certificate", "certification", "for", "please", "i", "want", "a",
+    "emploi", "temps", "horaire", "horaires", "jour", "jours", "cours", "seance", "seances",
+    "note", "notes", "matiere", "matieres", "principal", "principaux", "principale", "principales",
+    "dc1", "ds", "trimestre",
+    "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
 }
 
 SURNAME_JOINERS = {
@@ -30,6 +37,55 @@ SURNAME_JOINERS = {
     "abd", "abdel", "abdelkader", "abdelrahman",
     "hadj", "hadji", "haj", "hajj", "haji"
 }
+
+
+def _display_name(first_name: str | None = None, last_name: str | None = None) -> str:
+    parts = [part.strip().title() for part in (first_name, last_name) if part and part.strip()]
+    return " ".join(parts)
+
+
+def _build_student_not_found_error(requested_identity: str | None = None):
+    message = "Aucun eleve n'a ete retrouve dans notre etablissement."
+    if requested_identity:
+        message = (
+            f"Aucun eleve n'a ete retrouve dans notre etablissement pour "
+            f"'{requested_identity}'."
+        )
+
+    return {
+        "code": "student_not_found",
+        "message": (
+            f"{message} Veuillez verifier l'orthographe ou utiliser le matricule "
+            "de l'eleve."
+        ),
+        "requested_identity": requested_identity,
+    }
+
+
+def _build_not_student_error(person: dict | None = None, requested_identity: str | None = None):
+    person = person or {}
+    full_name = _display_name(person.get("PrenomFr"), person.get("NomFr"))
+    identity = full_name or requested_identity
+
+    message = "La personne demandee n'est pas enregistree comme eleve dans notre etablissement."
+    if identity:
+        message = (
+            f"{identity} n'est pas enregistre(e) comme eleve dans notre etablissement."
+        )
+
+    return {
+        "code": "not_student",
+        "message": message,
+        "requested_identity": identity,
+        "person": person or None,
+    }
+
+
+def _build_missing_identity_error():
+    return {
+        "code": "missing_student_identity",
+        "message": "Could not detect first and last name.",
+    }
 
 def normalize_name(s: str) -> str:
     if not s:
@@ -293,7 +349,7 @@ def smart_match(target, candidates):
 
 def extract_name_from_message(message: str):
     message_clean = re.sub(
-        r"\b(?:attestation|certificat|inscription|presence|présence|scolarite|scolarité|donner|donne|moi|je|pour|de|d['’]?|l[ea]?|du|un|une)\b",
+        r"\b(?:attestation|certificat|inscription|presence|présence|scolarite|scolarité|donner|donne|moi|je|pour|de|d['’]?|l[ea]?|du|un|une|emploi|temps|horaire|horaires|jour|jours|cours|seance|seances|note|notes|matiere|matieres|principal|principaux|principale|principales|dc1|ds|trimestre|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b",
         " ",
         message,
         flags=re.IGNORECASE,
@@ -329,6 +385,7 @@ def retrieve_eleve_context(message: str):
 
     # 1) Student ID 
     m = re.search(r"\b\d{3,}\b", message)
+    id_lookup_error = None
     if m:
         student_id = m.group()
         print(f"Search by ID: {student_id}")
@@ -338,6 +395,16 @@ def retrieve_eleve_context(message: str):
                 return _build_context(student), None
         except Exception as e:
             print(f"Error with ID {student_id}: {e}")
+            person_status = get_person_status_by_id(student_id)
+            if person_status and not person_status.get("IsEleve"):
+                return None, _build_not_student_error(
+                    person=person_status,
+                    requested_identity=f"ID {student_id}",
+                )
+            if not person_status:
+                id_lookup_error = _build_student_not_found_error(
+                    requested_identity=f"ID {student_id}"
+                )
 
     # 2) First/last name
     last, first, middle = extract_name_from_message(message)
@@ -350,10 +417,11 @@ def retrieve_eleve_context(message: str):
             middle = [] 
             print(f"Fallback extraction: {first} {last}")
         else:
-            return None, "Could not detect first and last name."
+            return None, id_lookup_error or _build_missing_identity_error()
 
     # Build full first name only after we have first
     target_first_full = first
+    requested_identity = _display_name(target_first_full, last)
 
     print(f"Searching student: {target_first_full} {last}")
 
@@ -364,6 +432,13 @@ def retrieve_eleve_context(message: str):
             return _build_context(student), None
     except Exception as e:
         print(f"Exact search failed: {e}")
+
+    person_status = get_person_status_by_name(last, first)
+    if person_status and not person_status.get("IsEleve"):
+        return None, _build_not_student_error(
+            person=person_status,
+            requested_identity=requested_identity,
+        )
 
     # try last name with middle parts joined (ex: 'bel hadj kacem')
     alt_last = None
@@ -378,6 +453,13 @@ def retrieve_eleve_context(message: str):
                     return _build_context(student), None
             except Exception as e:
                 print(f"Exact search failed (compound last): {e}")
+
+            person_status = get_person_status_by_name(alt_last, first)
+            if person_status and not person_status.get("IsEleve"):
+                return None, _build_not_student_error(
+                    person=person_status,
+                    requested_identity=_display_name(first, alt_last),
+                )
 
     last_variants = [last]
     if alt_last and alt_last != last:
@@ -400,7 +482,7 @@ def retrieve_eleve_context(message: str):
 
 
     if not candidates:
-        return None, "No students found in the database."
+        return None, _build_student_not_found_error(requested_identity=requested_identity)
 
     print(f"{len(candidates)} candidates to analyze")
 
@@ -464,11 +546,7 @@ def retrieve_eleve_context(message: str):
                     f"Veuillez vérifier le nom complet: {student['PrenomFr']} {student['NomFr']}"
                 )
 
-    return None, (
-        f"Aucun élève trouvé pour '{first.title()} {last.title()}'.\n"
-        "Veuillez vérifier l'orthographe ou utiliser le matricule de l'élève.\n"
-        "Conseil: écrivez le nom complet correctement."
-    )
+    return None, _build_student_not_found_error(requested_identity=requested_identity)
 
 
 

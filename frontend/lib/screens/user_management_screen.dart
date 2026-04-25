@@ -1,8 +1,7 @@
-
 import 'package:flutter/material.dart';
+import '../core/role_labels.dart';
 import '../models/user.dart';
 import '../services/user_service.dart';
-import '../services/auth_service.dart';
 
 class UserManagementScreen extends StatefulWidget {
   const UserManagementScreen({super.key});
@@ -13,7 +12,6 @@ class UserManagementScreen extends StatefulWidget {
 
 class _UserManagementScreenState extends State<UserManagementScreen> with TickerProviderStateMixin {
   final UserService _userService = UserService();
-  final AuthService _authService = AuthService();
   
   List<User> _users = [];
   List<User> _filteredUsers = [];
@@ -165,27 +163,13 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Ticker
           },
           tabs: const [
             Tab(text: 'Tous', icon: Icon(Icons.people_rounded)),
-            Tab(text: 'Super Admin', icon: Icon(Icons.admin_panel_settings_rounded)),
-            Tab(text: 'Admin', icon: Icon(Icons.shield_rounded)),
+            Tab(
+              text: superAdminRoleLabel,
+              icon: Icon(Icons.admin_panel_settings_rounded),
+            ),
+            Tab(text: adminRoleLabel, icon: Icon(Icons.shield_rounded)),
           ],
         ),
-        actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 16),
-            child: ElevatedButton.icon(
-              onPressed: _showAddUserDialog,
-              icon: const Icon(Icons.add_rounded, size: 20),
-              label: const Text('Ajouter un utilisateur'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _primaryBlue,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -268,11 +252,7 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Ticker
                               rows: _filteredUsers.map((user) {
                                 final roles = user.roles.isEmpty
                                     ? '-'
-                                    : user.roles.map((role) {
-                                        if (role == 'ROLE_SUPER_ADMIN') return 'Super Admin';
-                                        if (role == 'ROLE_ADMIN') return 'Admin';
-                                        return 'User';
-                                      }).join(', ');
+                                    : user.roles.map(roleLabel).join(', ');
                                 
                                 return DataRow(
                                   cells: [
@@ -410,7 +390,7 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Ticker
     final emailController = TextEditingController();
     final passwordController = TextEditingController();
     final confirmPasswordController = TextEditingController();
-    String selectedRole = 'ROLE_ADMIN';
+    String selectedRole = adminRole;
     bool isPasswordVisible = false;
     bool isConfirmPasswordVisible = false;
 
@@ -633,12 +613,12 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Ticker
                         icon: Icon(Icons.arrow_drop_down_rounded, color: _darkYellow),
                         items: const [
                           DropdownMenuItem(
-                            value: 'ROLE_ADMIN',
-                            child: Text('Admin'),
+                            value: adminRole,
+                            child: Text(adminRoleLabel),
                           ),
                           DropdownMenuItem(
-                            value: 'ROLE_SUPER_ADMIN',
-                            child: Text('Super Admin'),
+                            value: superAdminRole,
+                            child: Text(superAdminRoleLabel),
                           ),
                         ],
                         onChanged: (value) => setDialogState(() => selectedRole = value!),
@@ -786,7 +766,8 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Ticker
     final formKey = GlobalKey<FormState>();
     final telephoneController = TextEditingController(text: user.telephone ?? '');
     final emailPersonneController = TextEditingController(text: user.emailPersonne ?? '');
-    String selectedRole = user.roles.isNotEmpty ? user.roles.first : 'ROLE_ADMIN';
+    String selectedRole =
+        user.roles.isNotEmpty ? user.roles.first : adminRole;
     final displayName = [
       user.nom?.trim() ?? '',
       user.prenom?.trim() ?? '',
@@ -935,12 +916,12 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Ticker
                         icon: Icon(Icons.arrow_drop_down_rounded, color: _darkYellow),
                         items: const [
                           DropdownMenuItem(
-                            value: 'ROLE_ADMIN',
-                            child: Text('Admin'),
+                            value: adminRole,
+                            child: Text(adminRoleLabel),
                           ),
                           DropdownMenuItem(
-                            value: 'ROLE_SUPER_ADMIN',
-                            child: Text('Super Admin'),
+                            value: superAdminRole,
+                            child: Text(superAdminRoleLabel),
                           ),
                         ],
                         onChanged: (value) => setDialogState(() => selectedRole = value!),

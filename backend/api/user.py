@@ -126,6 +126,7 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     telephone: Optional[str] = None
     email_personne: Optional[str] = None
+    password: Optional[str] = None
     roles: Optional[Union[List[str], str]] = None
     changepassword: Optional[bool] = None
 
@@ -282,12 +283,25 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(db.get_
     telephone = payload.telephone.strip() if payload.telephone is not None else (person.Tel1 or user.email or "").strip()
     email_personne = _normalize_optional_string(payload.email_personne)
     roles_list = _parse_roles(payload.roles)
+    new_password = payload.password.strip() if payload.password is not None else None
 
     if not telephone:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Telephone requis",
         )
+
+    if payload.password is not None:
+        if not new_password:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Mot de passe requis",
+            )
+        if len(new_password) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Le mot de passe doit contenir au moins 6 caracteres",
+            )
 
     existing_user = db.query(models.User).filter(
         models.User.email == telephone,
@@ -314,6 +328,9 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(db.get_
 
     if payload.changepassword is not None:
         user.changepassword = _as_bool(payload.changepassword)
+
+    if new_password is not None:
+        user.password = hash_password(new_password)
 
     try:
         db.add(person)

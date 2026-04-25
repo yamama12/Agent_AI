@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:file_saver/file_saver.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/role_labels.dart';
 import '../models/chat_message.dart';
 import '../services/chat_api_service.dart';
 import '../services/auth_service.dart';
@@ -769,7 +770,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
     ];
 
-    if (_userRoles.contains('ROLE_SUPER_ADMIN')) {
+    if (_userRoles.contains(superAdminRole)) {
       items.add(
         const PopupMenuItem<String>(
           value: 'user_management',
@@ -1359,7 +1360,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          "Admin",
+                          primaryRoleLabel(_userRoles),
                           style: TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
@@ -1940,7 +1941,7 @@ void _showFullScreenImage(ChatMessage msg) {
               ),
             ),
             
-            // Bouton de téléchargement en bas
+/*             // Bouton de téléchargement en bas
             Positioned(
               bottom: 20,
               right: 20,
@@ -1992,10 +1993,10 @@ void _showFullScreenImage(ChatMessage msg) {
                   ),
                 ),
               ),
-            ),
+            ), */
             
             // Informations en haut à gauche
-            Positioned(
+/*             Positioned(
               top: 20,
               left: 20,
               child: Container(
@@ -2030,10 +2031,10 @@ void _showFullScreenImage(ChatMessage msg) {
                   ],
                 ),
               ),
-            ),
+            ), */
             
             // Indication de zoom
-            Positioned(
+/*             Positioned(
               bottom: 20,
               left: 20,
               child: Container(
@@ -2063,7 +2064,7 @@ void _showFullScreenImage(ChatMessage msg) {
                   ],
                 ),
               ),
-            ),
+            ), */
           ],
         ),
       );

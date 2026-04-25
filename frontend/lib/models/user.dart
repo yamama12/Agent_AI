@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 
+import '../core/role_labels.dart';
 
 class User {
   final int id;
@@ -32,17 +33,13 @@ class User {
   });
 
   // Vérifier si l'utilisateur est super admin
-  bool get isSuperAdmin => roles.contains('ROLE_SUPER_ADMIN');
+  bool get isSuperAdmin => roles.contains(superAdminRole);
 
   // Vérifier si l'utilisateur est admin
-  bool get isAdmin => roles.contains('ROLE_ADMIN');
+  bool get isAdmin => roles.contains(adminRole);
 
   // Rôle principal pour l'affichage
-  String get displayRole {
-    if (isSuperAdmin) return 'Super Admin';
-    if (isAdmin) return 'Admin';
-    return 'Utilisateur';
-  }
+  String get displayRole => primaryRoleLabel(roles);
 
   // Couleur selon le rôle
   Color get roleColor {

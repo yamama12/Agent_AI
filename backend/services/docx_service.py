@@ -57,7 +57,6 @@ def generate_CertificatScolarite_docx(data: dict, output_path: str = None) -> st
         if value is None:
             return default
         return value
-    
 
     # EN-TÊTE PRINCIPAL
     header_table = doc.add_table(rows=1, cols=3)

@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from api import personnes, eleves, inscriptionsEleves, classes, anneeScolaire, chat,documents, localites, auth, graph, civilite, user
+from api import personnes, eleves, inscriptionsEleves, classes, anneeScolaire, chat,documents, localites, auth, graph, civilite, user, matiere, noteeleveparmatiere, trimestre
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -15,6 +15,11 @@ app.include_router(documents.router)
 app.include_router(graph.router)
 app.include_router(localites.router)
 app.include_router(civilite.router)
+app.include_router(trimestre.router)
+app.include_router(matiere.router)
+app.include_router(noteeleveparmatiere.router)
+
+
 app.include_router(auth.router)
 app.include_router(user.router)
 app.add_middleware(
