@@ -33,6 +33,7 @@ class Personne(Base):
     # Relations
     eleves = relationship("Eleve", back_populates="personne")
     inscriptions = relationship("InscriptionEleve", back_populates="personne")
+    parent_profiles = relationship("Parent", back_populates="personne_ref")
 
 
 class Eleve(Base):
@@ -49,6 +50,7 @@ class Eleve(Base):
 
     personne = relationship("Personne", back_populates="eleves")
     inscriptions = relationship("InscriptionEleve", back_populates="eleve")
+    parent_links = relationship("ParentEleve", back_populates="eleve_ref")
 
 
 class AnneeScolaire(Base):
@@ -289,3 +291,32 @@ class Seance(Base):
     fin = Column(String)
     nomSeance = Column(String)
 
+class Parent(Base):
+    __tablename__ = 'parent'
+
+    AdresseEtr = Column(String)
+    codepostal = Column(Integer)
+    CodePostalEtr = Column(String)
+    Etablissement = Column(String)
+    Etranger = Column(String)
+    id = Column(Integer, primary_key=True, nullable=False)
+    PaysEtr = Column(String)
+    Personne = Column(Integer, ForeignKey("personne.id"))
+    Profession = Column(String)
+    ResideEtr = Column(String)
+    rib = Column(String)
+    VilleEtr = Column(String)
+
+    personne_ref = relationship("Personne", back_populates="parent_profiles")
+    eleve_links = relationship("ParentEleve", back_populates="parent_ref")
+
+class ParentEleve(Base):
+    __tablename__ = 'parenteleve'
+
+    Eleve = Column(Integer, ForeignKey("eleve.id"), primary_key=True, nullable=False)
+    id = Column(Integer, primary_key=True, nullable=False)
+    Parent = Column(Integer, ForeignKey("parent.id"), primary_key=True, nullable=False)
+    Type = Column(String, nullable=False)
+
+    parent_ref = relationship("Parent", back_populates="eleve_links")
+    eleve_ref = relationship("Eleve", back_populates="parent_links")

@@ -10,5 +10,5 @@ bcrypt==4.0.1
 
 
 
-# Google Gemini API client
-google-generativeai
+# LLM API client (configured via MISTRAL_API_KEY)
+mistralai

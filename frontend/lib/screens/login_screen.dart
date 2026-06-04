@@ -367,7 +367,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 const SizedBox(height: 24),
                                 
                                 // Lien pour s'inscrire (optionnel, à commenter si pas de page d'inscription)
-                                Row(
+/*                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
                                     Text(
@@ -395,7 +395,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                       ),
                                     ),
                                   ],
-                                ),
+                                ), */
                               ],
                             ),
                           ),

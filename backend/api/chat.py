@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import List
 from database.eleve_repository import (
     get_student_main_subject_grades,
+    get_student_parents_info,
     get_student_schedule_for_day,
 )
 from services.rag_service import retrieve_eleve_context
@@ -19,7 +20,7 @@ from services.graph_service import (
     generate_graph_bundle,
 )
 from services.docx_service import generate_CertificatScolarite_docx
-from ai.agent_ai import ask_agent, interpret_graph_summary
+from ai.agent_ai import ask_agent, interpret_graph_summary, generate_document_success_response
 import json
 import os
 import re
@@ -130,7 +131,7 @@ def _build_history_text(session: dict) -> str:
         return ""
     lines = []
     for item in session["history"]:
-        role = "Utilisateur" if item["role"] == "user" else "Assistant"
+        role = "Utilisateur" if item["role"] == "user" else "Agent IA"
         lines.append(f"{role}: {item['text']}")
     return "\n".join(lines)
 
@@ -277,8 +278,31 @@ def _detect_student_consultation_type(message: str) -> str | None:
     if not msg:
         return None
 
-    if any(token in msg for token in ("emploi du temps", "horaire", "horaires")):
+    # Never classify administrative document requests as consultation requests.
+    if "attestation" in msg or "certificat" in msg:
+        return None
+
+    # Schedule detection (French + English)
+    schedule_keywords = (
+        "emploi du temps", "horaire", "horaires",  # French
+        "schedule", "timetable", "class times", "courses"  # English
+    )
+    if any(token in msg for token in schedule_keywords):
         return "schedule"
+    
+    parent_identity_keywords = (
+        "parent", "parents", "pere", "mere", "tuteur", "tuteurs"
+    )
+    parent_contact_keywords = (
+        "telephone", "tel", "tel1", "tel2", "numero",
+        "etablissement", "travail", "profession", "contact",
+    )
+    if any(token in msg for token in parent_identity_keywords):
+        return "parents"
+    if any(token in msg for token in ("information parent", "informations parent", "info parent", "infos parent")):
+        return "parents"
+    if ("parent" in msg or "parents" in msg) and any(token in msg for token in parent_contact_keywords):
+        return "parents"
 
     graph_terms = (
         "graphe",
@@ -292,10 +316,15 @@ def _detect_student_consultation_type(message: str) -> str | None:
         "top",
         "meilleur",
         "meilleurs",
+        # English graph terms
+        "chart", "graph", "statistics", "average", "best",
     )
-    if any(token in msg for token in ("dc1", "ds", "matiere principale", "matieres principales")):
+    
+    # Grades detection (French + English)
+    grade_keywords = ("dc1", "ds", "matiere principale", "matieres principales")
+    if any(token in msg for token in grade_keywords):
         return "grades"
-    if ("note" in msg or "notes" in msg) and not any(term in msg for term in graph_terms):
+    if ("note" in msg or "notes" in msg or "grade" in msg or "grades" in msg or "mark" in msg or "marks" in msg) and not any(term in msg for term in graph_terms):
         return "grades"
 
     return None
@@ -351,31 +380,65 @@ def _student_full_name(eleve_data: dict | None) -> str:
     return f"{eleve_data.get('PrenomFr', '')} {eleve_data.get('NomFr', '')}".strip()
 
 
+def _build_document_success_message(
+    session: dict,
+    eleve_data: dict,
+    doc_type: str,
+    user_message: str = "",
+) -> str:
+    llm_message = generate_document_success_response(
+        document_type=doc_type,
+        student_data=eleve_data,
+        user_message=user_message,
+    )
+    if llm_message:
+        return llm_message
+
+    llm_reply = _ask_agent_with_memory(
+        session,
+        user_message=(
+            "Confirme en une phrase professionnelle que le document administratif "
+            "a ete genere avec succes pour l'eleve concerne."
+        ),
+    )
+    return (llm_reply or {}).get("response", "")
+
+
 def _missing_student_consultation_reply(
     session: dict,
     consultation_type: str,
     requested_identity: str | None = None,
 ):
-    subject = "l'emploi du temps" if consultation_type == "schedule" else "les notes"
+    if consultation_type == "schedule":
+        subject = "l'emploi du temps"
+    elif consultation_type == "parents":
+        subject = "les informations des parents"
+    else:
+        subject = "les notes"
     if requested_identity:
         response = (
-            f"Je n'ai pas pu identifier l'eleve demande ({requested_identity}) "
-            f"pour consulter {subject}. Merci de preciser son nom complet ou son matricule."
+            f"Je n'ai pas pu identifier l'élève demandé ({requested_identity}) "
+            f"pour consulter {subject}. Merci de préciser son nom complet ou son matricule."
         )
     else:
         response = (
-            f"Je n'ai pas pu identifier l'eleve demande pour consulter {subject}. "
-            "Merci de preciser son nom complet ou son matricule."
+            f"Je n'ai pas pu identifier l'élève demandé pour consulter {subject}. "
+            "Merci de préciser son nom complet ou son matricule."
         )
     return _respond(session, response)
 
 
 def _not_inscrit_consultation_reply(session: dict, eleve_data: dict, consultation_type: str):
-    subject = "l'emploi du temps" if consultation_type == "schedule" else "les notes"
+    if consultation_type == "schedule":
+        subject_phrase = "de l'emploi du temps"
+    elif consultation_type == "parents":
+        subject_phrase = "des informations des parents"
+    else:
+        subject_phrase = "des notes"
     full_name = _student_full_name(eleve_data)
     response = (
-        f"L'eleve {full_name} n'est pas inscrit pour l'annee scolaire active. "
-        f"La consultation de {subject} n'est donc pas possible."
+        f"L'élève {full_name} n'est pas inscrit pour l'année scolaire active. "
+        f"La consultation {subject_phrase} n'est donc pas possible."
     )
     return _respond(session, response)
 
@@ -385,7 +448,7 @@ def _ask_for_schedule_day_reply(session: dict, eleve_data: dict | None = None):
     target = f" de {full_name}" if full_name else ""
     return _respond(
         session,
-        f"Merci de preciser le jour souhaite pour consulter l'emploi du temps{target}.",
+        f"Merci de préciser le jour souhaité pour consulter l'emploi du temps{target}.",
     )
 
 
@@ -413,8 +476,8 @@ def _format_schedule_fallback(eleve_data: dict, requested_day: str, schedule_row
                 details += f" | {salle_value}"
             else:
                 details += f" | Salle {salle_value}"
-        if row.get("enseignant_id"):
-            details += f" | Enseignant ID {row['enseignant_id']}"
+        if row.get("enseignant"):
+            details += f" | Prof. {row['enseignant']}"
         if row.get("remarque"):
             details += f" | {row['remarque']}"
         lines.append(details)
@@ -440,11 +503,11 @@ def _format_grades_fallback(eleve_data: dict, grade_rows: list[dict]) -> str:
     full_name = _student_full_name(eleve_data)
     if not grade_rows:
         return (
-            f"Aucune note du trimestre 1 n'est disponible pour {full_name} "
-            "dans les matieres principales."
+            f"Aucune note n'est disponible pour {full_name} "
+            "dans les matières principales."
         )
 
-    lines = [f"Notes du trimestre 1 de {full_name} dans les matieres principales :"]
+    lines = [f"Notes de {full_name} dans les matières principales :"]
     for row in grade_rows:
         matiere = row.get("matiere") or f"Matiere {row.get('id_matiere')}"
         lines.append(
@@ -465,6 +528,49 @@ def _grades_consultation_reply(
         if row.get("id_matiere") in MAIN_SUBJECT_IDS
     ]
     return _respond(session, _format_grades_fallback(eleve_data, filtered_rows))
+
+
+def _format_parent_field(value: str | None) -> str:
+    cleaned = (value or "").strip()
+    return cleaned if cleaned else "Non renseigne"
+
+
+def _normalize_parent_relation(value: str | None) -> str:
+    relation = _normalize_text(value or "")
+    if relation in {"pere", "p"}:
+        return "père"
+    if relation in {"mere", "m"}:
+        return "mère"
+    if relation in {"tuteur", "tutrice", "t"}:
+        return "tuteur"
+    cleaned = (value or "").strip().lower()
+    return cleaned if cleaned else "Non renseigne"
+
+
+def _format_parents_fallback(eleve_data: dict, parent_rows: list[dict]) -> str:
+    full_name = _student_full_name(eleve_data)
+    if not parent_rows:
+        return f"Aucune information parent n'est disponible pour {full_name}."
+
+    lines = [f"Informations des parents de {full_name} :"]
+    for row in parent_rows:
+        parent_name = _format_parent_field(row.get("NomComplet"))
+        relation = _normalize_parent_relation(row.get("TypeParente"))
+        phones = [phone for phone in (row.get("Tel1"), row.get("Tel2")) if (phone or "").strip()]
+        phones_text = " / ".join(phones) if phones else "Non renseigne"
+        lines.append(
+            f"{parent_name} ({relation}) : Téléphone(s) = {phones_text}"
+        )
+    return "\n".join(lines)
+
+
+def _parents_consultation_reply(
+    session: dict,
+    eleve_data: dict,
+    parent_rows: list[dict],
+    rag_context: str = "",
+):
+    return _respond(session, _format_parents_fallback(eleve_data, parent_rows))
 
 
 def _handle_admin_student_consultation(
@@ -488,7 +594,7 @@ def _handle_admin_student_consultation(
         return _missing_student_consultation_reply(session, consultation_type, lookup_identity)
 
     eleve_data = rag_result["data"]
-    if eleve_data.get("StatutInscription") != "inscrit":
+    if consultation_type in {"schedule", "grades"} and eleve_data.get("StatutInscription") != "inscrit":
         session["pending_consultation"] = None
         return _not_inscrit_consultation_reply(session, eleve_data, consultation_type)
 
@@ -514,6 +620,10 @@ def _handle_admin_student_consultation(
         )
         session["pending_consultation"] = None
         
+        print(f"DEBUG SCHEDULE QUERY RESULT:")
+        print(f"  Error: {error}")
+        print(f"  Schedule rows count: {len(schedule_rows) if schedule_rows else 0}")
+        
         if error:
             return _respond(session, f"Erreur lors de la récupération de l'emploi du temps : {error.get('error', 'Erreur inconnue')}")
         
@@ -522,6 +632,23 @@ def _handle_admin_student_consultation(
             eleve_data,
             requested_day,
             schedule_rows,
+            rag_context=rag_context,
+        )
+
+    if consultation_type == "parents":
+        error, parent_rows = get_student_parents_info(str(eleve_data.get("Matricule")))
+        session["pending_consultation"] = None
+
+        if error:
+            return _respond(
+                session,
+                f"Erreur lors de la recuperation des informations des parents : {error.get('error', 'Erreur inconnue')}",
+            )
+
+        return _parents_consultation_reply(
+            session,
+            eleve_data,
+            parent_rows,
             rag_context=rag_context,
         )
 
@@ -700,15 +827,16 @@ def chat(request: ChatRequest, http_request: Request):
 
             file_url = f"http://127.0.0.1:8000/files/{pdf_file}"
             session["pending_document"] = None
-
-            llm_reply = _ask_agent_with_memory(
+            response_text = _build_document_success_message(
                 session,
-                user_message="Le document a ete genere avec succes. Redige une reponse professionnelle.",
+                eleve_data,
+                doc_type,
+                user_message=message,
             )
 
             session["last_student"] = rag_result
             session["last_context"] = rag_result.get("context", "")
-            return _respond(session, f"{llm_reply.get('response', '')}\n\n{file_url}")
+            return _respond(session, f"{response_text}\n\n{file_url}")
 
     pending_consultation = session.get("pending_consultation") or {}
     if (
@@ -808,15 +936,16 @@ def chat(request: ChatRequest, http_request: Request):
 
             docx_file = generate_CertificatScolarite_docx(eleve_data)
             file_url = f"http://127.0.0.1:8000/files/{docx_file}"
-
-            llm_reply = _ask_agent_with_memory(
+            response_text = _build_document_success_message(
                 session,
-                user_message="Le certificat de scolarite a ete genere avec succes. Redige une reponse professionnelle.",
+                eleve_data,
+                "certificat_scolarite",
+                user_message=message,
             )
 
             session["last_student"] = rag_result
             session["last_context"] = rag_context
-            return _respond(session, f"{llm_reply.get('response', '')}\n\n{file_url}")
+            return _respond(session, f"{response_text}\n\n{file_url}")
 
         # Attestation sans type -> Memoire pour demander le type
         if "attestation" in message_lower:
@@ -901,6 +1030,9 @@ def chat(request: ChatRequest, http_request: Request):
     if decision.get("intent") == "generate_document":
         if "ROLE_ADMIN" not in roles:
             return _respond(session, "Cette fonctionnalité est réservée aux personnel administratifs.")
+        if (not rag_result or not rag_result.get("data")) and session.get("last_student"):
+            rag_result = session.get("last_student")
+            rag_context = session.get("last_context", "")
         if not rag_result or not rag_result.get("data"):
             if lookup_error_code in {"not_student", "student_not_found"}:
                 return _not_student_document_reply(session, lookup_identity)
@@ -931,6 +1063,13 @@ def chat(request: ChatRequest, http_request: Request):
             file_url = f"http://127.0.0.1:8000/files/{pdf_file}"
 
         if file_url:
+            if not response_text.strip():
+                response_text = _build_document_success_message(
+                    session,
+                    eleve_data,
+                    doc_type or "document_administratif",
+                    user_message=message,
+                )
             response_text = f"{response_text}\n\n{file_url}"
 
     if rag_result and rag_result.get("data"):

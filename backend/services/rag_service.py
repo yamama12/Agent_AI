@@ -1,8 +1,9 @@
 """
-RAG Service – Student identification
+RAG Service - Student identification
 Fault-tolerant matching
 """
 import re
+import unicodedata
 from difflib import SequenceMatcher
 
 from Levenshtein import distance as levenshtein_distance
@@ -18,14 +19,18 @@ from database.eleve_repository import (
 
 # WORDS TO IGNORE
 STOP_WORDS = {
-    "donner","donne", "moi", "je", "l", "la", "le", "les", "de", "des", "d", "pour", "veux", "veut", "Génèrer", "générer", "generer", "generate", "génère",
-    "attestation", "atestation","certificat", "inscription", "presence", "présence",
-    "scolarite", "scolarité",
-    "un", "une", "mon", "ma", "mes", "élève", "eleve", "du",
+    "donner","donne", "moi", "je", "l", "la", "le", "les", "de", "des", "d", "pour", "veux", "veut", "generer", "generate", "génère", "générer", "genere",
+    "attestation", "atestation","certificat", "inscription", "presence",
+    "scolarite",
+    "un", "une", "mon", "ma", "mes", "eleve", "du",
     "certificate", "certification", "for", "please", "i", "want", "a",
     "emploi", "temps", "horaire", "horaires", "jour", "jours", "cours", "seance", "seances",
     "note", "notes", "matiere", "matieres", "principal", "principaux", "principale", "principales",
+    "information", "informations", "info", "infos", "renseignement", "renseignements",
     "dc1", "ds", "trimestre",
+    "parent", "parents", "pere", "mere", "tuteur", "tuteurs", "responsable", "responsables",
+    "telephone", "telephones", "numero", "numeros", "num", "tel", "tel1", "tel2",
+    "etablissement", "travail", "profession",
     "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
 }
@@ -348,8 +353,11 @@ def smart_match(target, candidates):
 
 
 def extract_name_from_message(message: str):
+    message = unicodedata.normalize("NFKD", message or "")
+    message = "".join(ch for ch in message if not unicodedata.combining(ch))
+
     message_clean = re.sub(
-        r"\b(?:attestation|certificat|inscription|presence|présence|scolarite|scolarité|donner|donne|moi|je|pour|de|d['’]?|l[ea]?|du|un|une|emploi|temps|horaire|horaires|jour|jours|cours|seance|seances|note|notes|matiere|matieres|principal|principaux|principale|principales|dc1|ds|trimestre|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b",
+        r"\b(?:attestation|certificat|inscription|presence|présence|scolarite|scolarité|donner|donne|moi|je|pour|de|d['’]?|l[ea]?|du|un|une|emploi|temps|horaire|horaires|jour|jours|cours|seance|seances|note|notes|matiere|matieres|principal|principaux|principale|principales|information|informations|info|infos|renseignement|renseignements|dc1|ds|trimestre|parent|parents|pere|mere|tuteur|tuteurs|responsable|responsables|telephone|telephones|numero|numeros|num|tel|tel1|tel2|etablissement|travail|profession|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b",
         " ",
         message,
         flags=re.IGNORECASE,
@@ -576,3 +584,4 @@ Current year active: {'Yes' if student_data.get('AnneeActuelle') else 'No'}
         "context": context,
         "data": student_data,
     }
+

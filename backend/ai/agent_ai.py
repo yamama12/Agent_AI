@@ -2,11 +2,15 @@ import json
 import os
 import re
 from dotenv import load_dotenv
-from google import genai
+try:
+    from mistralai import Mistral
+except ImportError:
+    from mistralai.client import Mistral
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+MODEL_NAME = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
+client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
 
 GRAPH_TYPE_LABELS = {
     "students_by_class": "repartition des eleves par classe",
@@ -17,6 +21,12 @@ GRAPH_TYPE_LABELS = {
     "average_grades_by_subject": "moyennes des notes par matiere",
     "grades_distribution": "distribution des notes par trimestre",
     "top_students_by_class": "meilleurs eleves par classe",
+}
+
+DOCUMENT_TYPE_LABELS = {
+    "attestation_inscription": "attestation d'inscription",
+    "attestation_presence": "attestation de presence",
+    "certificat_scolarite": "certificat de scolarite",
 }
 
 
@@ -51,6 +61,8 @@ def _clean_professional_response(text: str, intent: str) -> str:
 
     raw = re.sub(r"\n{3,}", "\n\n", raw)
     raw = re.sub(r"\s{2,}", " ", raw).strip()
+    raw = re.sub(r"\bassistant(e)?\b", "agent", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"https?://\S+|www\.\S+", "", raw, flags=re.IGNORECASE).strip()
 
     if not raw:
         if intent == "show_graph":
@@ -95,13 +107,37 @@ def _normalize_payload(data: dict) -> dict:
     return data
 
 
+def _extract_mistral_content(response) -> str:
+    try:
+        content = response.choices[0].message.content
+    except Exception:
+        return ""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        chunks = []
+        for item in content:
+            text = ""
+            if isinstance(item, dict):
+                text = item.get("text") or ""
+            else:
+                text = getattr(item, "text", "") or ""
+            if text:
+                chunks.append(text)
+        return "\n".join(chunks).strip()
+
+    return ""
+
+
 def _call_llm_text(prompt: str) -> str:
     try:
-        response = client.models.generate_content(
-            model="gemma-3-4b-it",
-            contents=prompt
+        response = client.chat.complete(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
         )
-        return (response.text or "").strip()
+        return _extract_mistral_content(response)
     except Exception as e:
         print("ERROR:", str(e))
         return ""
@@ -130,83 +166,25 @@ def _extract_llm_text(raw: str) -> str:
     return text
 
 
-def _format_percent(value) -> str:
-    return f"{float(value):.1f}".replace(".", ",")
+def _clean_llm_text_no_fallback(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
 
+    blocked_patterns = [
+        r"\[.*?ins[Ã©e]rer.*?\]",
+        r"je ne peux pas g[Ã©e]n[Ã©e]rer d[' ]image",
+        r"comme je ne peux pas g[Ã©e]n[Ã©e]rer d[' ]image",
+        r"description textuelle",
+    ]
+    for pattern in blocked_patterns:
+        raw = re.sub(pattern, "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
 
-def _format_score(value) -> str:
-    return f"{float(value):.2f}".replace(".", ",")
-
-
-def _fallback_graph_interpretation(graph_type: str, graph_summary: dict) -> str:
-    items = graph_summary.get("items") or []
-    total = int(graph_summary.get("total") or 0)
-    category_count = int(graph_summary.get("category_count") or len(items))
-
-    if not items or total <= 0:
-        return (
-            "Le graphique a ete genere, mais aucune donnee exploitable n'est "
-            "disponible pour proposer une interpretation fiable."
-        )
-
-    leader = items[0]
-    leader_pct = _format_percent(leader.get("share") or 0)
-
-    if graph_type == "students_by_gender" and len(items) >= 2:
-        runner_up = items[1]
-        diff = abs(int(leader.get("value") or 0) - int(runner_up.get("value") or 0))
-        return (
-            f"Le graphique presente {total} eleves au total. "
-            f"La categorie la plus representee est {leader['label']} avec "
-            f"{leader['value']} eleves ({leader_pct} %), contre "
-            f"{runner_up['value']} pour {runner_up['label']}. "
-            f"L'ecart entre les deux categories est de {diff} eleves."
-        )
-
-    if graph_type == "top_students_by_class":
-        student_name = leader.get("student") or "Non precise"
-        average_value = graph_summary.get("average_value")
-        response = (
-            f"Le graphique compare le meilleur eleve de {category_count} classes. "
-            f"La meilleure performance est en {leader['label']} avec {student_name}, "
-            f"qui obtient {_format_score(leader['value'])}/20."
-        )
-        if average_value:
-            response += (
-                f" La moyenne des meilleurs eleves est de "
-                f"{_format_score(average_value)}/20."
-            )
-        return response
-
-    scope = {
-        "students_by_class": "classes",
-        "students_by_locality": "localites",
-        "inscriptions_breakdown": "types d'inscription",
-        "average_grades_by_class": "classes",
-        "average_grades_by_subject": "matieres",
-        "grades_distribution": "trimestres",
-        "top_students_by_class": "classes",
-    }.get(graph_type, "categories")
-
-    response = (
-        f"Le graphique presente {total} eleves repartis sur {category_count} {scope}. "
-        f"La categorie dominante est {leader['label']} avec {leader['value']} eleves "
-        f"({leader_pct} % du total)."
-    )
-
-    if len(items) >= 2:
-        runner_up = items[1]
-        runner_up_pct = _format_percent(runner_up.get("share") or 0)
-        response += (
-            f" Elle est suivie de {runner_up['label']} avec "
-            f"{runner_up['value']} eleves ({runner_up_pct} %)."
-        )
-
-    note = graph_summary.get("note")
-    if note:
-        response += f" {note}."
-
-    return response
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
+    raw = re.sub(r"\s{2,}", " ", raw).strip()
+    raw = re.sub(r"\bassistant(e)?\b", "agent", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"https?://\S+|www\.\S+", "", raw, flags=re.IGNORECASE).strip()
+    return raw
 
 
 def interpret_graph_summary(graph_type: str, graph_summary: dict, user_message: str = "") -> str:
@@ -254,11 +232,57 @@ Texte final :
 """
 
     raw = _call_llm_text(prompt)
-    text = _extract_llm_text(raw)
+    text = _clean_llm_text_no_fallback(_extract_llm_text(raw))
     if text:
-        return _clean_professional_response(text, "show_graph")
+        return text
 
-    return _fallback_graph_interpretation(graph_type, graph_summary)
+    retry_prompt = f"""
+Tu es un agent administratif scolaire.
+Ecris UNIQUEMENT une interpretation professionnelle en francais (2 phrases maximum) du graphique suivant.
+Base-toi uniquement sur ces donnees JSON :
+{json.dumps(graph_summary, ensure_ascii=False)}
+"""
+    retry_raw = _call_llm_text(retry_prompt)
+    return _clean_llm_text_no_fallback(_extract_llm_text(retry_raw))
+
+
+def generate_document_success_response(document_type: str, student_data: dict, user_message: str = "") -> str:
+    full_name = (
+        f"{(student_data or {}).get('PrenomFr', '')} {(student_data or {}).get('NomFr', '')}"
+    ).strip() or "l'eleve demande"
+    classe = (student_data or {}).get("Classe") or "non precisee"
+    annee = (student_data or {}).get("AnneeScolaire") or "non precisee"
+    doc_label = DOCUMENT_TYPE_LABELS.get(document_type, "document administratif")
+
+    prompt = f"""
+Tu es un agent administratif scolaire.
+Un document vient d'etre genere avec succes.
+
+Contraintes strictes :
+- Reponds en francais naturel et professionnel.
+- Redige 1 ou 2 phrases maximum.
+- Mentionne le type de document et le nom de l'eleve.
+- N'utilise ni puces, ni markdown, ni JSON, ni URL.
+
+Type de document : {doc_label}
+Eleve : {full_name}
+Classe : {classe}
+Annee scolaire : {annee}
+Message utilisateur initial : {user_message or "Non precise"}
+
+Texte final :
+"""
+    raw = _call_llm_text(prompt)
+    text = _clean_llm_text_no_fallback(_extract_llm_text(raw))
+    if text:
+        return text
+
+    retry_prompt = (
+        "Redige une phrase professionnelle en francais confirmant la generation reussie "
+        f"du {doc_label} pour {full_name} (classe {classe}, annee scolaire {annee})."
+    )
+    retry_raw = _call_llm_text(retry_prompt)
+    return _clean_llm_text_no_fallback(_extract_llm_text(retry_raw))
 
 def ask_agent(user_message: str, rag_context: str = "") -> dict:
     """
@@ -274,6 +298,9 @@ def ask_agent(user_message: str, rag_context: str = "") -> dict:
     prompt = f"""
 Si l'utilisateur demande ton role, tes missions, tes fonctionnalites ou ce que tu peux faire, tu dois repondre avec intent="chat" et expliquer clairement que la generation des documents administratifs est dediee au personnel administrateur, tandis que la generation des graphes, des statistiques et des analyses est reservee a l'Administrateur.
 Tu es un agent IA administratif scolaire compétent et professionnel.
+IMPORTANT : tu es un agent, jamais un assistant.
+IMPORTANT : n'utilise jamais le mot "assistant" pour te designer.
+IMPORTANT : n'inclus jamais de lien URL dans tes reponses.
 
 OBJECTIFS :
 - Pour les salutations : répondre de manière chaleureuse et professionnelle, en invitant l'utilisateur à formuler sa demande et en expliquant que tu peux générer des documents administratifs.
@@ -300,6 +327,7 @@ RÈGLES MÉTIER STRICTES (À RESPECTER OBLIGATOIREMENT) :
 - Elle est TOUJOURS STANDARD
 - Il n’existe AUCUN autre type d’attestation d’inscription
 - Tu n’as JAMAIS le droit de demander une précision supplémentaire
+- Tu n’as JAMAIS le droit de demander une précision de type d’attestation d’inscription
 - Si l'utilisateur demande une attestation d'inscription et que l’élève est identifié :
   → intent="generate_document"
   → document_type="attestation_inscription"
@@ -407,11 +435,11 @@ def _call_llm_with_json(prompt: str) -> dict:
     Fonction interne pour appeler le LLM, envoyer un prompt et récupérer une réponse JSON structurée.
     """
     try:
-        response = client.models.generate_content(
-            model="gemma-3-4b-it",
-            contents=prompt
+        response = client.chat.complete(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
         )
-        raw = (response.text or "").strip()
+        raw = _extract_mistral_content(response)
         print("RAW:", raw)
 
         # Recherche du JSON

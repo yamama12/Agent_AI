@@ -14,6 +14,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import '../models/conversation.dart';
 import 'user_management_screen.dart';
+import 'profile_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, this.startNewConversationOnOpen = false});
@@ -824,6 +825,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     switch (value) {
       case 'profile':
         // TODO: Naviguer vers le profil
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const ProfileScreen()),
+        );
         break;
       case 'user_management':
         // TODO: Naviguer vers la gestion des utilisateurs
@@ -2244,24 +2249,33 @@ void _showFullScreenImage(ChatMessage msg) {
     );
   }
 
+  /// Extracts file names from a conversation's messages.
   List<String> _extractFileNames(Conversation conversation) {
     final files = <String>{};
     final filesRegex = RegExp(r'https?:\/\/[^\s]+\/files\/([^\s]+)');
     final statsRegex = RegExp(r'https?:\/\/[^\s]+\/statistics\/([^\s]+)');
 
     for (final msg in conversation.messages) {
-      final text = msg.text.trim();
-      if (text.isEmpty) continue;
-      for (final match in filesRegex.allMatches(text)) {
-        final name = match.group(1);
-        if (name != null && name.isNotEmpty) {
-          files.add('files/$name');
+      final sources = <String>[
+        msg.text,
+        if (msg.imageUrl != null) msg.imageUrl!,
+      ];
+
+      for (final source in sources) {
+        final text = source.trim();
+        if (text.isEmpty) continue;
+
+        for (final match in filesRegex.allMatches(text)) {
+          final name = match.group(1);
+          if (name != null && name.isNotEmpty) {
+            files.add('files/$name');
+          }
         }
-      }
-      for (final match in statsRegex.allMatches(text)) {
-        final name = match.group(1);
-        if (name != null && name.isNotEmpty) {
-          files.add('statistics/$name');
+        for (final match in statsRegex.allMatches(text)) {
+          final name = match.group(1);
+          if (name != null && name.isNotEmpty) {
+            files.add('statistics/$name');
+          }
         }
       }
     }
@@ -2269,6 +2283,7 @@ void _showFullScreenImage(ChatMessage msg) {
     return files.toList();
   }
 
+  /// Deletes files associated with a conversation.
   Future<void> _deleteConversationFiles(Conversation conversation) async {
     final files = _extractFileNames(conversation);
     if (files.isEmpty) return;
@@ -2285,6 +2300,7 @@ void _showFullScreenImage(ChatMessage msg) {
     }
   }
 
+  /// Displays a dialog to confirm the deletion of a conversation.
   void _confirmDeleteConversation(
     Conversation conversation, {
     VoidCallback? onDeleted,

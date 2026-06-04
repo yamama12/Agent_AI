@@ -9,6 +9,8 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, DataError
 from passlib.context import CryptContext
 from database import models, db
+from api.dependencies import get_current_user
+from api.security import verify_password
 
 router = APIRouter(
     prefix="/users",
@@ -130,8 +132,33 @@ class UserUpdate(BaseModel):
     roles: Optional[Union[List[str], str]] = None
     changepassword: Optional[bool] = None
 
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
+
+
+def _load_user_and_person(user_id: int, db_session: Session) -> tuple[models.User, Optional[models.Personne]]:
+    user = db_session.query(models.User).filter(models.User.id == user_id).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Utilisateur introuvable",
+        )
+
+    person = None
+    if user.idpersonne is not None:
+        person = (
+            db_session.query(models.Personne)
+            .filter(models.Personne.id == user.idpersonne)
+            .first()
+        )
+
+    return user, person
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 @router.post("/create", status_code=status.HTTP_201_CREATED)
@@ -262,6 +289,76 @@ def create_user(user: UserCreate, db: Session = Depends(db.get_db)):
         raise HTTPException(status_code=500, detail=detail) from exc
 
     return _serialize_user(new_user, person)
+
+
+@router.get("/me", status_code=status.HTTP_200_OK)
+def get_my_profile(
+    current_user: dict = Depends(get_current_user),
+    db_session: Session = Depends(db.get_db),
+):
+    user_id = current_user.get("user_id")
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token invalide",
+        )
+
+    user, person = _load_user_and_person(user_id, db_session)
+    profile = _serialize_user(user, person)
+    profile["roles"] = current_user.get("roles") or _parse_roles(user.roles) or []
+    profile["created_at"] = None
+    return profile
+
+
+@router.post("/me/change-password", status_code=status.HTTP_200_OK)
+def change_my_password(
+    payload: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+    db_session: Session = Depends(db.get_db),
+):
+    user_id = current_user.get("user_id")
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token invalide",
+        )
+
+    user, _ = _load_user_and_person(user_id, db_session)
+    current_password = payload.current_password.strip()
+    new_password = payload.new_password.strip()
+
+    if not current_password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Mot de passe actuel requis",
+        )
+
+    if len(new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Le mot de passe doit contenir au moins 6 caracteres",
+        )
+
+    if not verify_password(current_password, user.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mot de passe actuel incorrect",
+        )
+
+    user.password = hash_password(new_password)
+    user.changepassword = False
+
+    try:
+        db_session.add(user)
+        db_session.commit()
+    except SQLAlchemyError as exc:
+        db_session.rollback()
+        detail = "Erreur lors du changement de mot de passe"
+        if os.getenv("DEBUG_SQL_ERRORS", "").lower() == "true":
+            detail = f"Erreur lors du changement de mot de passe: {exc}"
+        raise HTTPException(status_code=500, detail=detail) from exc
+
+    return {"message": "Mot de passe modifie avec succes"}
 
 
 @router.put("/{user_id}", status_code=status.HTTP_200_OK)

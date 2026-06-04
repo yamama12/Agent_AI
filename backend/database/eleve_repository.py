@@ -172,6 +172,65 @@ def get_eleve_data_by_name(nom: str, prenom: str):
         connection.close()
 
 
+def get_student_parents_info(matricule: str):
+    """
+    Recupere les informations des parents d'un eleve:
+    - Nom complet
+    - Lien de parente
+    - Numeros de telephone (Tel1, Tel2)
+    - Etablissement
+
+    Le matricule attendu correspond a l'id de la table personne de l'eleve.
+    """
+    connection = _get_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        query = """
+            SELECT
+                TRIM(CONCAT_WS(' ', NULLIF(TRIM(pp.PrenomFr), ''), NULLIF(TRIM(pp.NomFr), ''))) AS NomComplet,
+                TRIM(pp.Tel1) AS Tel1,
+                TRIM(pp.Tel2) AS Tel2,
+                TRIM(pa.Etablissement) AS Etablissement,
+                TRIM(pe.Type) AS TypeParente
+            FROM personne p_eleve
+            INNER JOIN eleve e
+                ON e.IdPersonne = p_eleve.id
+            INNER JOIN parenteleve pe
+                ON pe.Eleve = e.id
+            INNER JOIN parent pa
+                ON pa.id = pe.Parent
+            LEFT JOIN personne pp
+                ON pp.id = pa.Personne
+            WHERE p_eleve.id = %s
+            ORDER BY pe.id, pa.id
+        """
+
+        cursor.execute(query, (matricule,))
+        rows = cursor.fetchall() or []
+
+        formatted_rows = []
+        for row in rows:
+            formatted_rows.append(
+                {
+                    "NomComplet": (row.get("NomComplet") or "").strip(),
+                    "Tel1": (row.get("Tel1") or "").strip(),
+                    "Tel2": (row.get("Tel2") or "").strip(),
+                    "Etablissement": (row.get("Etablissement") or "").strip(),
+                    "TypeParente": (row.get("TypeParente") or "").strip(),
+                }
+            )
+
+        return None, formatted_rows
+
+    except Exception as e:
+        return {"error": str(e)}, []
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_person_status_by_id(person_id: str):
     connection = mysql.connector.connect(
         host=os.getenv("DB_HOST"),
@@ -408,11 +467,12 @@ def get_student_active_enrollment(matricule: str):
         cursor.close()
         connection.close()
 
-
-
+#---------------------------------------------------------------
+# Obtenir les notes de matières principales de l'élève.
+#---------------------------------------------------------------
 def get_student_main_subject_grades(
     matricule: str,
-    trimestre_id: int = TRIMESTRE_1_ID,
+    trimestre_id: int | None = None,
 ):
     enrollment = get_student_active_enrollment(matricule)
     if not enrollment:
@@ -423,36 +483,175 @@ def get_student_main_subject_grades(
 
     try:
         subject_ids_sql = ", ".join(str(subject_id) for subject_id in PRIMARY_SUBJECT_IDS)
-        query = f"""
-            SELECT
-                m.id AS id_matiere,
-                COALESCE(
-                    NULLIF(TRIM(m.NomMatiereFr), ''),
-                    CONCAT('Matiere ', m.id)
-                ) AS matiere,
-                MAX(NULLIF(TRIM(n.DC1), '')) AS DC1,
-                MAX(NULLIF(TRIM(n.DS), '')) AS DS
-            FROM matiere m
-            LEFT JOIN noteeleveparmatiere n
-                ON n.id_matiere = m.id
-               AND n.id_inscription = %s
-               AND n.id_classe = %s
-               AND n.id_trimestre = %s
-               AND (n.Etat = '1' OR n.Etat IS NULL)
-            WHERE m.id IN ({subject_ids_sql})
-            GROUP BY m.id, m.NomMatiereFr
-            ORDER BY FIELD(m.id, {subject_ids_sql})
-        """
+        inscription_id = enrollment.get("InscriptionId")
+        classe_id = enrollment.get("ClasseId")
 
-        cursor.execute(
-            query,
-            (
-                enrollment["InscriptionId"],
-                enrollment["ClasseId"],
-                trimestre_id,
-            ),
-        )
-        return enrollment, cursor.fetchall()
+        def _has_any_grade(rows: list[dict]) -> bool:
+            for row in rows:
+                dc1 = str(row.get("DC1")).strip() if row.get("DC1") is not None else ""
+                ds = str(row.get("DS")).strip() if row.get("DS") is not None else ""
+                if dc1 or ds:
+                    return True
+            return False
+
+        def _compact_name(value: str) -> str:
+            cleaned = (value or "").strip().lower()
+            return cleaned.replace(" ", "").replace("-", "").replace("'", "")
+
+        def _get_student_name_variants() -> list[str]:
+            cursor.execute(
+                """
+                SELECT TRIM(NomFr) AS NomFr, TRIM(PrenomFr) AS PrenomFr
+                FROM personne
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (matricule,),
+            )
+            person = cursor.fetchone() or {}
+            nom = (person.get("NomFr") or "").strip()
+            prenom = (person.get("PrenomFr") or "").strip()
+            variants = {
+                _compact_name(f"{prenom} {nom}"),
+                _compact_name(f"{nom} {prenom}"),
+                _compact_name(f"{prenom}{nom}"),
+                _compact_name(f"{nom}{prenom}"),
+            }
+            return [v for v in variants if v]
+
+        def _query_by_inscription(current_trimestre_id: int) -> list[dict]:
+            if not inscription_id or not classe_id:
+                return []
+
+            query = f"""
+                SELECT
+                    m.id AS id_matiere,
+                    COALESCE(
+                        NULLIF(TRIM(m.NomMatiereFr), ''),
+                        CONCAT('Matiere ', m.id)
+                    ) AS matiere,
+                    MAX(NULLIF(TRIM(n.DC1), '')) AS DC1,
+                    MAX(NULLIF(TRIM(n.DS), '')) AS DS
+                FROM matiere m
+                LEFT JOIN noteeleveparmatiere n
+                    ON n.id_matiere = m.id
+                   AND n.id_inscription = %s
+                   AND n.id_classe = %s
+                   AND n.id_trimestre = %s
+                   AND (n.Etat IN ('0', '1') OR n.Etat IS NULL)
+                WHERE m.id IN ({subject_ids_sql})
+                GROUP BY m.id, m.NomMatiereFr
+                ORDER BY FIELD(m.id, {subject_ids_sql})
+            """
+            cursor.execute(query, (inscription_id, classe_id, current_trimestre_id))
+            return cursor.fetchall()
+
+        def _query_by_name(current_trimestre_id: int, name_variants: list[str]) -> list[dict]:
+            if not name_variants:
+                return []
+
+            placeholders = ", ".join(["%s"] * len(name_variants))
+            query = f"""
+                SELECT
+                    m.id AS id_matiere,
+                    COALESCE(
+                        NULLIF(TRIM(m.NomMatiereFr), ''),
+                        CONCAT('Matiere ', m.id)
+                    ) AS matiere,
+                    MAX(NULLIF(TRIM(n.DC1), '')) AS DC1,
+                    MAX(NULLIF(TRIM(n.DS), '')) AS DS
+                FROM matiere m
+                LEFT JOIN noteeleveparmatiere n
+                    ON n.id_matiere = m.id
+                   AND n.id_trimestre = %s
+                   AND (n.Etat IN ('0', '1') OR n.Etat IS NULL)
+                   AND REPLACE(REPLACE(REPLACE(LOWER(TRIM(n.nomprenom)), ' ', ''), '-', ''), "'", '') IN ({placeholders})
+                WHERE m.id IN ({subject_ids_sql})
+                GROUP BY m.id, m.NomMatiereFr
+                ORDER BY FIELD(m.id, {subject_ids_sql})
+            """
+            params = [current_trimestre_id] + name_variants
+            cursor.execute(query, tuple(params))
+            return cursor.fetchall()
+
+        if trimestre_id is None:
+            cursor.execute(
+                """
+                SELECT id
+                FROM trimestre
+                WHERE actif = '1'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
+            active_t = cursor.fetchone()
+            preferred_trimestre = int(active_t["id"]) if active_t and active_t.get("id") is not None else TRIMESTRE_1_ID
+        else:
+            preferred_trimestre = int(trimestre_id)
+
+        # 1) Chemin principal: inscription active
+        rows = _query_by_inscription(preferred_trimestre)
+        if _has_any_grade(rows):
+            return enrollment, rows
+
+        # 2) Fallback sur les trimestres de la meme inscription
+        if inscription_id and classe_id:
+            cursor.execute(
+                f"""
+                SELECT DISTINCT n.id_trimestre AS id_trimestre
+                FROM noteeleveparmatiere n
+                WHERE n.id_inscription = %s
+                  AND n.id_classe = %s
+                  AND n.id_matiere IN ({subject_ids_sql})
+                  AND (n.Etat IN ('0', '1') OR n.Etat IS NULL)
+                  AND (
+                        NULLIF(TRIM(n.DC1), '') IS NOT NULL
+                     OR NULLIF(TRIM(n.DS), '') IS NOT NULL
+                  )
+                ORDER BY n.id_trimestre DESC
+                """,
+                (inscription_id, classe_id),
+            )
+            for item in cursor.fetchall():
+                candidate = int(item["id_trimestre"])
+                if candidate == preferred_trimestre:
+                    continue
+                candidate_rows = _query_by_inscription(candidate)
+                if _has_any_grade(candidate_rows):
+                    return enrollment, candidate_rows
+
+        # 3) Fallback orphan rows: match par nomprenom (quand anciennes inscriptions supprimees)
+        name_variants = _get_student_name_variants()
+        rows_by_name = _query_by_name(preferred_trimestre, name_variants)
+        if _has_any_grade(rows_by_name):
+            return enrollment, rows_by_name
+
+        if name_variants:
+            placeholders = ", ".join(["%s"] * len(name_variants))
+            cursor.execute(
+                f"""
+                SELECT DISTINCT n.id_trimestre AS id_trimestre
+                FROM noteeleveparmatiere n
+                WHERE n.id_matiere IN ({subject_ids_sql})
+                  AND (n.Etat IN ('0', '1') OR n.Etat IS NULL)
+                  AND (
+                        NULLIF(TRIM(n.DC1), '') IS NOT NULL
+                     OR NULLIF(TRIM(n.DS), '') IS NOT NULL
+                  )
+                  AND REPLACE(REPLACE(REPLACE(LOWER(TRIM(n.nomprenom)), ' ', ''), '-', ''), "'", '') IN ({placeholders})
+                ORDER BY n.id_trimestre DESC
+                """,
+                tuple(name_variants),
+            )
+            for item in cursor.fetchall():
+                candidate = int(item["id_trimestre"])
+                if candidate == preferred_trimestre:
+                    continue
+                candidate_rows = _query_by_name(candidate, name_variants)
+                if _has_any_grade(candidate_rows):
+                    return enrollment, candidate_rows
+
+        return enrollment, rows_by_name if rows_by_name else rows
 
     finally:
         cursor.close()
@@ -849,20 +1048,23 @@ def get_grades_distribution_by_trimestre():
 
     try:
         query = """
-            SELECT 
-                t.nom_trimestre AS trimestre,
-                n.id_inscription,
-                COALESCE(NULLIF(TRIM(n.orale), ''), 0) AS orale,
-                COALESCE(NULLIF(TRIM(n.DS), ''), 0) AS DS,
-                COALESCE(NULLIF(TRIM(n.DC1), ''), 0) AS DC1
-            FROM noteeleveparmatiere n
-            INNER JOIN trimestre t ON n.id_trimestre = t.id
-            INNER JOIN classe c ON n.id_classe = c.id
-            INNER JOIN anneescolaire a ON c.ID_ANNEE_SCO = a.id
-            WHERE n.id_trimestre = '31'
-            AND a.AnneeScolaire = '2024/2025'
-            AND (n.Etat = '1' OR n.Etat IS NULL)
-        """
+                        SELECT 
+            t.nom_trimestre AS trimestre,
+            n.id_inscription,
+            COALESCE(NULLIF(TRIM(n.orale), ''), 0) AS orale,
+            COALESCE(NULLIF(TRIM(n.DS), ''), 0) AS DS,
+            COALESCE(NULLIF(TRIM(n.DC1), ''), 0) AS DC1
+        FROM noteeleveparmatiere n
+        INNER JOIN trimestre t ON n.id_trimestre = t.id
+        LEFT JOIN classe c ON n.id_classe = c.id
+        LEFT JOIN anneescolaire a ON c.ID_ANNEE_SCO = a.id
+        WHERE n.id_trimestre = '31'
+        AND (n.Etat = '1' OR n.Etat IS NULL)
+        AND (
+            a.AnneeScolaire = '2024/2025'
+            OR a.id IS NULL
+        )
+                        """
         
         cursor.execute(query)
         rows = cursor.fetchall()
@@ -1154,46 +1356,61 @@ def get_student_schedule_for_day(matricule: str, requested_day: str):
         if not classe_id:
             return {"error": "Classe non trouvée pour cet élève"}, []
         
+        print(f"DEBUG get_student_schedule_for_day:")
+        print(f"  Matricule: {matricule}")
+        print(f"  Jour demandé: {requested_day} (ID: {day_id})")
+        print(f"  Classe ID: {classe_id}")
+        print(f"  Groupe ID: {groupe_id}")
+        print(f"  Année scolaire ID: {annee_scolaire_id}")
+        
         # Récupérer l'emploi du temps
         query = """
-            SELECT 
-                e.id,
-                e.Jour,
-                j.libelleJourFr AS jour_label,
-                e.Matiere,
-                m.NomMatiereFr AS matiere,
-                e.Salle,
-                s.nomSalleFr AS salle,
-                e.Enseignant,
-                p.PrenomFr AS enseignant_prenom,
-                p.NomFr AS enseignant_nom,
-                sc.debut AS heure_debut,
-                sc.fin AS heure_fin,
-                sc.nomSeance AS seance,
-                e.Remarque,
-                e.Groupe
-            FROM emploidutemps e
-            LEFT JOIN jour j ON e.Jour = j.id
-            LEFT JOIN matiere m ON e.Matiere = m.id
-            LEFT JOIN salle s ON e.Salle = s.id
-            LEFT JOIN enseingant en ON e.Enseignant = en.id
-            LEFT JOIN personne p ON en.idPersonne = p.id
-            LEFT JOIN seance sc ON e.SeanceDebut = sc.id
-            LEFT JOIN classe c ON e.Classe = c.id
-            WHERE c.id = %s
-            AND e.Jour = %s
-            AND e.AnneeScolaire = %s
-            AND (
-                e.Groupe IS NULL 
-                OR e.Groupe = '' 
-                OR (e.Groupe = %s AND %s IS NOT NULL)
-                OR (%s IS NULL AND (e.Groupe IS NULL OR e.Groupe = ''))
-            )
-            ORDER BY sc.debut
+                SELECT 
+                    e.id,
+                    e.Jour,
+                    j.libelleJourFr AS jour_label,
+                    e.Matiere,
+                    m.NomMatiereFr AS matiere,
+                    e.Salle,
+                    s.nomSalleFr AS salle,
+                    e.Enseignant,
+
+                    -- depuis personne maintenant
+                    per.PrenomFr AS enseignant_prenom,
+                    per.NomFr AS enseignant_nom,
+
+                    COALESCE(sc_debut.debut, CAST(CONCAT(e.SeanceDebut, ':00') AS CHAR)) COLLATE utf8mb4_0900_ai_ci AS heure_debut,
+                    COALESCE(sc_fin.fin, CAST(CONCAT(e.SeanceFin, ':00') AS CHAR)) COLLATE utf8mb4_0900_ai_ci AS heure_fin,
+                    COALESCE(sc_debut.nomSeance, CAST(CONCAT('Seance ', e.SeanceDebut, '-', e.SeanceFin) AS CHAR)) COLLATE utf8mb4_0900_ai_ci AS seance,
+                    
+                    e.Remarque,
+                    e.Groupe
+
+                FROM emploidutemps e
+
+                LEFT JOIN jour j ON e.Jour = j.id
+                LEFT JOIN matiere m ON e.Matiere = m.id
+                LEFT JOIN salle s ON e.Salle = s.id
+
+                LEFT JOIN enseingant en ON e.Enseignant = en.id
+                LEFT JOIN personne per ON en.idPersonne = per.id
+
+                LEFT JOIN seance sc_debut ON e.SeanceDebut = sc_debut.id
+                LEFT JOIN seance sc_fin ON e.SeanceFin = sc_fin.id
+
+                WHERE e.Classe = %s
+                AND e.Jour = %s
+                AND e.AnneeScolaire = %s
+
+                ORDER BY e.SeanceDebut, e.SeanceFin;
         """
         
-        cursor.execute(query, (classe_id, day_id, annee_scolaire_id, groupe_id, groupe_id, groupe_id))
+        cursor.execute(query, (classe_id, day_id, annee_scolaire_id))
         rows = cursor.fetchall()
+        
+        print(f"  Query returned {len(rows) if rows else 0} rows")
+        if not rows:
+            print(f"  ⚠️  NO SCHEDULE FOUND for classe_id={classe_id}, day_id={day_id}, annee_scolaire_id={annee_scolaire_id}, groupe_id={groupe_id}")
         
         # Formater les résultats
         schedule_rows = []
